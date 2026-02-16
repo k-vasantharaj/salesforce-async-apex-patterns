@@ -1,0 +1,149 @@
+/*When a Contact is updated, its parent Account is marked asynchronously using a @future method to avoid updating parent records directly inside the trigger.*/
+
+
+//Contact Trigger
+
+trigger ContactTrigger on Contact (after update) {
+
+    /*
+     * When a Contact (child) record is updated,
+     * mark its parent Account using a @future method.
+     */
+
+    Set<Id> accountIds = new Set<Id>();
+
+    for (Contact newCon : Trigger.new) {
+
+        Contact oldCon = Trigger.oldMap.get(newCon.Id);
+
+        // Check only when the Contact belongs to an Account
+        // and when any meaningful change happened
+        if (newCon.AccountId != null && newCon != oldCon) {
+            accountIds.add(newCon.AccountId);
+        }
+    }
+
+    if (!accountIds.isEmpty()) {
+        TriggerHandler.updateParentAccounts(accountIds);
+    }
+}
+
+//Trigger Handler
+
+public class TriggerHandler {
+
+    /*
+     * Updates the parent Account records by setting
+     * Has_Child_Updated__c = true.
+     * This method is executed asynchronously using @future.
+     */
+    @future
+    public static void updateParentAccounts(Set<Id> accountIds) {
+
+        if (accountIds == null || accountIds.isEmpty()) {
+            return;
+        }
+
+        List<Account> accountsToUpdate = new List<Account>();
+
+        for (Account acc : [
+            SELECT Id, Has_Child_Updated__c
+            FROM Account
+            WHERE Id IN :accountIds
+        ]) {
+            acc.Has_Child_Updated__c = true;
+            accountsToUpdate.add(acc);
+        }
+
+        if (!accountsToUpdate.isEmpty()) {
+            update accountsToUpdate;
+        }
+    }
+}
+
+
+//Test class
+
+@IsTest
+public class OpportunityTriggerTest {
+
+    /*
+     * Verifies that when a Contact is updated,
+     * its parent Account is updated asynchronously
+     * by the @future method.
+     */
+    @IsTest
+    static void testAccountUpdatedAfterContactUpdate() {
+
+        // Arrange
+        Account acc = new Account(
+            Name = 'Test Account'
+        );
+        insert acc;
+
+        Contact con = new Contact(
+            LastName  = 'Test Contact',
+            AccountId = acc.Id
+        );
+        insert con;
+
+        // Act
+        Test.startTest();
+
+        con.LastName = 'Updated Contact';
+        update con;
+
+        Test.stopTest(); // Executes the @future method
+
+        // Assert
+        Account updatedAcc = [
+            SELECT Id, Has_Child_Updated__c
+            FROM Account
+            WHERE Id = :acc.Id
+        ];
+
+        System.assertEquals(
+            true,
+            updatedAcc.Has_Child_Updated__c,
+            'Parent Account must be marked as updated after Contact update.'
+        );
+    }
+
+
+    /*
+     * Verifies that the Account is NOT updated
+     * when no Contact update occurs.
+     */
+    @IsTest
+    static void testAccountNotUpdatedWhenContactNotChanged() {
+
+        // Arrange
+        Account acc = new Account(
+            Name = 'Test Account 2'
+        );
+        insert acc;
+
+        Contact con = new Contact(
+            LastName  = 'Test Contact 2',
+            AccountId = acc.Id
+        );
+        insert con;
+
+        // No update on Contact is performed here
+
+        // Assert
+        Account accAfterInsert = [
+            SELECT Id, Has_Child_Updated__c
+            FROM Account
+            WHERE Id = :acc.Id
+        ];
+
+        System.assertEquals(
+            false,
+            accAfterInsert.Has_Child_Updated__c,
+            'Parent Account must not be updated when the Contact is not modified.'
+        );
+    }
+}
+
+
